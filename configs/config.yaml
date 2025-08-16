@@ -1,0 +1,14 @@
+# Transformer Hyperparameters
+d_model: 128
+nhead: 4
+num_encoder_layers: 2
+num_decoder_layers: 2
+dim_feedforward: 512
+dropout: 0.1
+
+# Training Configuration
+learning_rate: 0.0001
+num_epochs: 200
+batch_size: 2
+eval_interval: 5
+device: 'cuda'
