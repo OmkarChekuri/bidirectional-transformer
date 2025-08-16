@@ -6,6 +6,8 @@ import random
 import os
 import yaml
 import logging
+import nltk
+from nltk.translate.bleu_score import corpus_bleu, SmoothingFunction # Corrected: Use corpus_bleu
 import time
 
 # --- Logging Setup ---
@@ -371,17 +373,62 @@ def train_model(model, dataloader, optimizer, criterion, config, dataset, logger
 
         avg_loss = total_loss / len(dataloader)
         
-        epoch_metrics.append({'epoch': epoch + 1, 'loss': avg_loss})
-
+        # New: Calculate BLEU score at evaluation intervals
+        bleu_score = -1.0
         if (epoch + 1) % config.eval_interval == 0 or epoch == config.num_epochs - 1:
+            # We will use the fixed test sentences for a consistent BLEU score measurement
+            test_eng_sentences = ["hello", "cat", "I am a student."]
+            test_sanskrit_sentences = ["नमस्ते", "बिल्ली", "अहं छात्रोऽस्मि।"]
+            
+            all_translations = []
+            all_references = []
+            
+            for sentence in test_eng_sentences:
+                translated = translate_sentence_bidirectional(model, sentence, "eng_to_sanskrit", dataset=dataset, config=config)
+                all_translations.append(translated)
+                all_references.append(dataset.sanskrit_lines[test_eng_sentences.index(sentence)])
+
+            for sentence in test_sanskrit_sentences:
+                translated = translate_sentence_bidirectional(model, sentence, "sanskrit_to_eng", dataset=dataset, config=config)
+                all_translations.append(translated)
+                all_references.append(dataset.eng_lines[test_sanskrit_sentences.index(sentence)])
+            
+            # Corrected: Call corpus_bleu instead of sentence_bleu
+            bleu_score = calculate_bleu(all_translations, all_references)
+            logger.info(f"Epoch {epoch+1}/{config.num_epochs}, Loss: {avg_loss:.4f}, BLEU Score: {bleu_score:.4f}")
+        else:
             logger.info(f"Epoch {epoch+1}/{config.num_epochs}, Loss: {avg_loss:.4f}")
+
+        epoch_metrics.append({'epoch': epoch + 1, 'loss': avg_loss, 'bleu_score': bleu_score})
     
     logger.info("\n--- Training Complete ---")
     logger.info(f"\n--- Epoch Metrics Log ---")
     logger.info(str(epoch_metrics))
 
 
-# --- 12. Inference (Bidirectional Translation) Function ---
+# --- 12. Inference & Evaluation Functions ---
+def calculate_bleu(candidates: list, references: list):
+    """
+    Calculates the BLEU score for a list of translations.
+    The smoothing function is used to prevent zero scores for very small datasets.
+    
+    Args:
+        candidates (list): A list of translated sentences (strings).
+        references (list): A list of reference sentences (strings).
+        
+    Returns:
+        float: The average BLEU score.
+    """
+    # Tokenize each sentence into characters
+    tokenized_candidates = [[char for char in s] for s in candidates]
+    # The reference needs to be a list of reference lists for corpus_bleu
+    tokenized_references = [[[char for char in s]] for s in references]
+    
+    # Corrected: Call corpus_bleu which is designed for this use case
+    chencherry = SmoothingFunction()
+    return corpus_bleu(tokenized_references, tokenized_candidates, smoothing_function=chencherry.method1)
+
+
 @torch.no_grad()
 def translate_sentence_bidirectional(model, sentence: str, direction: str, max_output_len: int = 20, dataset=None, config=None):
     model.eval()
@@ -428,7 +475,6 @@ def translate_sentence_bidirectional(model, sentence: str, direction: str, max_o
         decoder_input = torch.cat([decoder_input, predicted_token_id.unsqueeze(0)], dim=1)
         
     def decode_sentence(tokens, itos_map):
-        # Corrected: Handle tokens that might be out of vocabulary
         decoded_chars = []
         for t in tokens:
             t_int = t.item()
@@ -451,7 +497,7 @@ if __name__ == "__main__":
         "नमस्ते", "विश्व", "बिल्ली", "कुत्ता", "सेब",
         "पानी", "सूर्य", "चंद्रमा", "अच्छा", "बुरा",
         "अहं छात्रोऽस्मि।", "सः शिक्षकः अस्ति।", "सा पठितुं रोचते।",
-        "पक्षी गायति।", "वयं पाइथनं शिक्षामहे。"
+        "पक्षी गायति।", "वयं पाइथनं शिक्षामहे।"
     ]
     with open('english.txt', 'w', encoding='utf-8') as f:
         for line in dummy_eng_data: f.write(line + '\n')
@@ -461,7 +507,6 @@ if __name__ == "__main__":
     # --- Initialize ---
     config = TransformerConfig('configs/config.yaml')
     
-    # --- Logging Setup ---
     if not os.path.exists('logs'):
         os.makedirs('logs')
     log_file_name = f"transformer_training_log_{int(time.time())}.log"
